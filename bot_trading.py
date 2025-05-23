@@ -69,17 +69,22 @@ def colocar_tp_sl(symbol, side, qty, tp, sl):
             timeInForce="GTC"
         )
     except Exception as e:
-        print(f"Error al colocar TP/SL: {e}")
+        print(f"⚠️ Error al colocar TP/SL: {e}")
+        enviar_mensaje_telegram(f"⚠️ Error colocando TP/SL: {e}")
 
 def ejecutar_trade(symbol, side, tp, sl, capital=None):
     try:
         mark_price = float(client.futures_mark_price(symbol=symbol)['markPrice'])
 
         if capital is None:
-            capital = usd_amount
+            symbol_key = f"CAPITAL_{symbol.upper()}"
+            capital_env = os.getenv(symbol_key)
+            capital = float(capital_env) if capital_env else usd_amount
 
         precision = get_precision(symbol)
         qty = round(capital / mark_price, precision)
+
+        print(f"🧾 Ejecutando orden {side} en {symbol} con qty={qty}, TP={tp}, SL={sl}")
 
         client.futures_create_order(
             symbol=symbol,
@@ -95,12 +100,15 @@ def ejecutar_trade(symbol, side, tp, sl, capital=None):
         enviar_mensaje_telegram(confirmar)
 
     except Exception as e:
+        print(f"❌ ERROR BINANCE: {e}")
         enviar_mensaje_telegram(f"❌ *Error ejecutando orden:* {e}")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
+        print("✅ JSON recibido:", data)
+
         if not data:
             return {"status": "error", "msg": "JSON inválido"}
 
