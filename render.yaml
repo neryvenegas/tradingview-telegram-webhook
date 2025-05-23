@@ -1,12 +1,18 @@
 services:
   - type: web
-    name: telegram-alert-bot
+    name: tradingview-telegram-bot
     env: python
     plan: free
-    buildCommand: ""
-    startCommand: "python main.py"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_trading.py
     envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
+      - key: BINANCE_API_KEY
+        value: TU_API_KEY
+      - key: BINANCE_API_SECRET
+        value: TU_API_SECRET
+      - key: TELEGRAM_BOT_TOKEN
+        value: TU_TELEGRAM_TOKEN
       - key: TELEGRAM_CHAT_ID
-        sync: false
+        value: TU_CHAT_ID
+      - key: POSITION_USDT
+        value: "100"
