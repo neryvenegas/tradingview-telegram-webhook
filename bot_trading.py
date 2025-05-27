@@ -1,134 +1,106 @@
+
 import os
+import re
 import json
-import math
-import requests
-from flask import Flask, request
+import logging
 from dotenv import load_dotenv
 from binance.client import Client
 from binance.enums import *
+from telegram.ext import Updater, MessageHandler, Filters
 
-load_dotenv()
+load_dotenv("config.env")
 
+# Binance
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 client = Client(api_key, api_secret)
 
+# Config
 bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-chat_id = os.getenv("TELEGRAM_CHAT_ID")
+chat_id = int(os.getenv("TELEGRAM_CHAT_ID"))
 usd_amount = float(os.getenv("POSITION_USDT", 100))
 
-app = Flask(__name__)
+# Regex para formato visual
+regex = re.compile(r"\*([A-Z]+(?:USDT|USDC))\*.*?Tipo:\s*(BUY|SELL).*?Precio:\s*(\d+\.?\d*|mercado).*?TP.*?:\s*(\d+\.?\d*).*?SL.*?:\s*(\d+\.?\d*)", re.DOTALL)
 
-def enviar_mensaje_telegram(texto):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": texto,
-        "parse_mode": "Markdown"
-    }
+def ejecutar_trade(symbol, side, entry_price, tp, sl, capital=None):
     try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        print(f"Error al enviar mensaje a Telegram: {e}")
+        if entry_price.lower() == "mercado":
+            mark_price_data = client.futures_mark_price(symbol=symbol)
+            mark_price = float(mark_price_data['markPrice'])
+        else:
+            mark_price = float(entry_price)
 
-def get_precision(symbol):
-    info = client.futures_exchange_info()
-    for s in info['symbols']:
-        if s['symbol'] == symbol:
-            for f in s['filters']:
-                if f['filterType'] == 'LOT_SIZE':
-                    step_size = float(f['stepSize'])
-                    return abs(int(round(-1 * math.log10(step_size))))
-    raise Exception("No se pudo obtener la precisión del símbolo")
+        capital = capital if capital is not None else usd_amount
+        quantity = round(capital / mark_price, 3)
 
-def colocar_tp_sl(symbol, side, qty, tp, sl):
-    try:
-        side = side.upper()
-        positionSide = "LONG" if side == "BUY" else "SHORT"
-        opposite_side = "SELL" if side == "BUY" else "BUY"
+        print(f"🚀 Ejecutando orden MARKET: {side} {symbol} con {quantity} contratos")
 
-        client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type="STOP_MARKET",
-            quantity=qty,
-            stopPrice=sl,
-            positionSide=positionSide,
-            workingType="MARK_PRICE",
-            timeInForce="GTC"
-        )
-
-        client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type="TAKE_PROFIT_MARKET",
-            quantity=qty,
-            stopPrice=tp,
-            positionSide=positionSide,
-            workingType="MARK_PRICE",
-            timeInForce="GTC"
-        )
-    except Exception as e:
-        print(f"⚠️ Error al colocar TP/SL: {e}")
-        enviar_mensaje_telegram(f"⚠️ Error colocando TP/SL: {e}")
-
-def ejecutar_trade(symbol, side, tp, sl, capital=None):
-    try:
-        mark_price = float(client.futures_mark_price(symbol=symbol)['markPrice'])
-
-        if capital is None:
-            symbol_key = f"CAPITAL_{symbol.upper()}"
-            capital_env = os.getenv(symbol_key)
-            capital = float(capital_env) if capital_env else usd_amount
-
-        precision = get_precision(symbol)
-        qty = round(capital / mark_price, precision)
-
-        print(f"🧾 Ejecutando orden {side} en {symbol} con qty={qty}, TP={tp}, SL={sl}")
-
-        client.futures_create_order(
+        order = client.futures_create_order(
             symbol=symbol,
             side=SIDE_BUY if side.upper() == "BUY" else SIDE_SELL,
             type=ORDER_TYPE_MARKET,
-            quantity=qty,
+            quantity=quantity,
             positionSide="LONG" if side.upper() == "BUY" else "SHORT"
         )
 
-        colocar_tp_sl(symbol, side, qty, tp, sl)
-
-        confirmar = f"📥 *Orden ejecutada en Binance*\n\n*Activo:* {symbol}\n*Dirección:* {side}\n🎯 *TP:* {tp}\n🛡️ *SL:* {sl}"
-        enviar_mensaje_telegram(confirmar)
-
+        print(f"✅ Orden ejecutada en Binance: {order}")
     except Exception as e:
-        print(f"❌ ERROR BINANCE: {e}")
-        enviar_mensaje_telegram(f"❌ *Error ejecutando orden:* {e}")
+        print(f"❌ Error al ejecutar orden en Binance: {e}")
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
+def procesar_mensaje(update, context):
     try:
-        data = request.get_json()
-        print("✅ JSON recibido:", data)
+        text = update.message.text
+        print("📩 Mensaje recibido:")
+        print(text)
 
-        if not data:
-            return {"status": "error", "msg": "JSON inválido"}
+        # Primero intenta como JSON puro
+        try:
+            data = json.loads(text)
+            if all(k in data for k in ["symbol", "side", "tp", "sl", "capital"]):
+                ejecutar_trade(
+                    symbol=data["symbol"],
+                    side=data["side"],
+                    entry_price="mercado",
+                    tp=data["tp"],
+                    sl=data["sl"],
+                    capital=float(data["capital"])
+                )
+                return
+        except json.JSONDecodeError:
+            pass  # No era JSON, seguimos con regex
 
-        resumen = f"📢 *Alerta de TradingView*\n\n🔹 *Activo:* `{data['symbol']}`\n🔹 *Tipo:* `{data['side']}`\n🔹 *TP 🎯:* `{data['tp']}`\n🔹 *SL 🛡️:* `{data['sl']}`\n🔹 *Capital:* `${data['capital']}`"
-        enviar_mensaje_telegram(resumen)
-
-        ejecutar_trade(
-            symbol=data["symbol"],
-            side=data["side"],
-            tp=float(data["tp"]),
-            sl=float(data["sl"]),
-            capital=float(data["capital"])
-        )
-
-        return {"status": "ok"}
+        # Luego intenta como mensaje visual
+        match = regex.search(text)
+        if match:
+            symbol, side, entry, tp, sl = match.groups()
+            ejecutar_trade(symbol, side, entry, tp, sl)
+        else:
+            print("⚠️ Formato no reconocido (ni JSON ni visual)")
 
     except Exception as e:
-        print(f"Error en webhook: {e}")
-        return {"status": "error", "msg": str(e)}
+        print(f"❌ Error procesando mensaje: {e}")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def procesar_senal_desde_archivo():
+    try:
+        with open("señal.txt", "r") as f:
+            text = f.read().strip()
+        print(f"📝 Señal desde archivo:\n{text}")
+        match = regex.search(text)
+        if match:
+            symbol, side, entry, tp, sl = match.groups()
+            ejecutar_trade(symbol, side, entry, tp, sl)
+        else:
+            print("⚠️ Formato de señal no válido en archivo")
+    except Exception as e:
+        print(f"❌ Error al procesar archivo: {e}")
+
+if __name__ == '__main__':
+    procesar_senal_desde_archivo()
+    logging.basicConfig(level=logging.INFO)
+    updater = Updater(token=bot_token, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, procesar_mensaje))
+    print("🤖 Bot híbrido escuchando mensajes de Telegram...")
+    updater.start_polling()
+    updater.idle()
