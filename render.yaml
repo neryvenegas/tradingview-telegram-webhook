@@ -1,11 +1,8 @@
 services:
   - type: web
-    name: telegram-bot
-    runtime: python
-    buildCommand: ""
-    startCommand: gunicorn wsgi:app
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: "TU_TOKEN_AQUI"
-      - key: TELEGRAM_CHAT_ID
-        value: "TU_CHAT_ID_AQUI"
+    name: tradingview-telegram-webhook
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    autoDeploy: true
