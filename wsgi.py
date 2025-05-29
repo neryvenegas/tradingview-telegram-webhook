@@ -1,4 +1,4 @@
-from bot_telegram import app
+from main import app  # pragma: no cover
 
-if __name__ == "__main__":
-    app.run()
+# Render will still use gunicorn main:app; having this file lets you run
+# `gunicorn wsgi:app` locally if you prefer.
