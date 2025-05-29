@@ -1,30 +1,141 @@
-from flask import Flask, request
-import requests
-import os
+import os, json, datetime, requests
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 
+# ---------------------------------------------------------------------------
+# ENV
+# ---------------------------------------------------------------------------
+load_dotenv("config.env")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").split()[0]
+if not BOT_TOKEN or not CHAT_ID:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured")
+
+TG_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+# ---------------------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------------------
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+_escape_chars = r"_*[]()~`>#+\-=|{}.!"
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Webhook activo - esperando POST de TradingView."
+md = lambda t: ''.join('\'+c if c in _escape_chars else c for c in str(t))  # safe MarkdownV2
+
+
+def fmt_trade(d: dict) -> str:
+    side = d.get("side", "?").upper()
+    return (
+        f"{'🟢' if side=='BUY' else '🔴'} *{md(d.get('symbol'))}*
+"
+        f"`{datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}`
+"
+        f"*{side}* @ _market_
+"
+        f"🎯 TP: `{md(d.get('tp'))}`
+"
+        f"🛡 SL: `{md(d.get('sl'))}`
+"
+        f"💰 Capital: `${md(d.get('capital'))}`"
+    )
+
+
+def send_telegram(text: str):
+    resp = requests.post(TG_API_URL, json={
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": True,
+    }, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
-    mensaje = "📢 *Alerta de TradingView*\n\n"
-    for key, value in data.items():
-        mensaje += f"🔹 *{key}*: `{value}`\n"
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, data=payload)
-    return {"status": "ok"}
+    try:
+        raw = request.get_data(as_text=True) or ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = {"text": raw}
+
+        if {"symbol", "side", "tp", "sl", "capital"}.issubset(data):
+            msg = fmt_trade(data)
+        else:
+            txt = data.get("text", json.dumps(data, indent=2))
+            msg = f"```json
+{txt}
+```"
+
+        tg_resp = send_telegram(msg)
+        return jsonify(status="ok", id=tg_resp.get("result", {}).get("message_id"))
+
+    except Exception as exc:
+        return jsonify(status="error", detail=str(exc)), 500
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+```python
+import os
+import json
+import requests
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# ENV – load credentials from config.env (Render automatically injects them)
+# ---------------------------------------------------------------------------
+load_dotenv("config.env")                         # ✅ keep the file outside GitHub
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "").split()[0]  # strip inline comments
+if not BOT_TOKEN or not CHAT_ID:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured")
+
+TG_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+# ---------------------------------------------------------------------------
+# FLASK APP
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+
+
+def send_telegram(text: str) -> dict:
+    """Send *text* to Telegram – Markdown‑V2 safe by default."""
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": True,
+    }
+    resp = requests.post(TG_API_URL, json=payload, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Endpoint that TradingView will hit with a JSON alert body."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        # ────────────────────────────────────────────────────────────────────
+        # BUILD A NICE MESSAGE  
+        # If the alert already contains a "text" key, forward it as‑is.  
+        # Otherwise pretty‑print the whole payload.
+        # ────────────────────────────────────────────────────────────────────
+        if "text" in data and isinstance(data["text"], str):
+            msg = data["text"]
+        else:
+            msg = "```json\n" + json.dumps(data, indent=2) + "\n```"
+
+        tg_response = send_telegram(msg)
+        return jsonify({"status": "ok", "telegram_id": tg_response.get("result", {}).get("message_id")})
+
+    except Exception as exc:
+        return jsonify({"status": "error", "detail": str(exc)}), 500
+
+
+if __name__ == "__main__":
+    # Local debugging – not used on Render (Gunicorn will take over)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
