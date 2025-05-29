@@ -1,0 +1,10 @@
+# python
+__pycache__/
+*.pyc
+
+# env
+config.env
+.env
+
+# misc
+*.zip
